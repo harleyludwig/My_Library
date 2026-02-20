@@ -15,22 +15,49 @@ struct BookLookupService {
 
         let isbnCandidates = normalizedISBNCandidates(from: sanitized)
 
+        // Phase 1: Concurrent ISBN lookups (Google Books + Open Library in parallel)
         for candidate in isbnCandidates {
-            if let byISBN = await bestEffort({ try await queryGoogleBooks(query: "isbn:\(candidate)") }) {
-                return await enrichCoverIfNeeded(byISBN, isbnCandidates: isbnCandidates)
+            if let result = await concurrentISBNLookup(isbn: candidate) {
+                return await enrichAndValidateCover(result, isbnCandidates: isbnCandidates)
             }
         }
 
-        if let bySearch = await bestEffort({ try await queryGoogleBooks(query: sanitized) }) {
-            return await enrichCoverIfNeeded(bySearch, isbnCandidates: isbnCandidates)
+        // Phase 2: Broader search (Google Books + Open Library Search in parallel)
+        let preferredISBN = isbnCandidates.first { $0.count == 10 || $0.count == 13 }
+        async let googleSearch = bestEffort({ try await self.queryGoogleBooks(query: sanitized) })
+        async let openLibSearch = bestEffort({ try await self.queryOpenLibrarySearch(query: sanitized, preferredISBN: preferredISBN) })
+
+        let googleResult = await googleSearch
+        let openLibResult = await openLibSearch
+
+        if let result = googleResult {
+            return await enrichAndValidateCover(result, isbnCandidates: isbnCandidates)
+        }
+        if let result = openLibResult {
+            return await enrichAndValidateCover(result, isbnCandidates: isbnCandidates)
         }
 
+        // Phase 3: WorldCat fallback
         for candidate in isbnCandidates where candidate.count == 10 || candidate.count == 13 {
-            if let byOpenLibrary = await bestEffort({ try await queryOpenLibrary(isbn: candidate) }) {
-                return await enrichCoverIfNeeded(byOpenLibrary, isbnCandidates: isbnCandidates)
+            if let result = await bestEffort({ try await queryWorldCat(isbn: candidate) }) {
+                return await enrichAndValidateCover(result, isbnCandidates: isbnCandidates)
             }
         }
 
+        return nil
+    }
+
+    private func concurrentISBNLookup(isbn: String) async -> BookLookupResult? {
+        let isValidLength = isbn.count == 10 || isbn.count == 13
+
+        async let googleResult = bestEffort({ try await self.queryGoogleBooks(query: "isbn:\(isbn)") })
+        async let openLibResult: BookLookupResult? = isValidLength
+            ? await bestEffort({ try await self.queryOpenLibrary(isbn: isbn) })
+            : nil
+
+        // Prefer Google (richer metadata), fall back to Open Library
+        if let google = await googleResult { return google }
+        if let openLib = await openLibResult { return openLib }
         return nil
     }
 
@@ -389,36 +416,52 @@ struct BookLookupService {
         )
     }
 
-    private func enrichCoverIfNeeded(_ result: BookLookupResult, isbnCandidates: [String]) async -> BookLookupResult {
-        let trimmedCover = result.coverURL.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard trimmedCover.isEmpty else {
+    private func enrichAndValidateCover(_ result: BookLookupResult, isbnCandidates: [String]) async -> BookLookupResult {
+        let currentCover = result.coverURL.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        // Google Books image URLs are reliable — trust without validation
+        if !currentCover.isEmpty,
+           currentCover.contains("googleapis.com") || currentCover.contains("books.google") {
             return result
         }
 
+        // Collect all possible cover URL candidates for validation
+        var candidates: [String] = []
+        func appendUnique(_ value: String?) {
+            guard let value else { return }
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty, !candidates.contains(trimmed) else { return }
+            candidates.append(trimmed)
+        }
+
+        // Start with whatever the lookup returned
+        appendUnique(currentCover)
+
+        // Open Library ISBN-based cover URLs
+        var seenISBNs = Set<String>()
+        for raw in [result.isbn.filter(\.isNumber)] + isbnCandidates {
+            let normalized = raw.filter { $0.isNumber || $0 == "X" || $0 == "x" }.uppercased()
+            guard normalized.count == 10 || normalized.count == 13, !seenISBNs.contains(normalized) else { continue }
+            seenISBNs.insert(normalized)
+            appendUnique("https://covers.openlibrary.org/b/isbn/\(normalized)-L.jpg?default=false")
+        }
+
+        // Google metadata cover search — if found, trust it immediately
         if let googleCover = await bestEffort({ try await queryGoogleCover(query: "intitle:\(result.title) inauthor:\(result.author)") }) {
             return resultWithCover(result, coverURL: googleCover)
         }
 
-        var coverSearchCandidates: [String] = []
-        let numericISBN = result.isbn.filter { $0.isNumber }
-        if !numericISBN.isEmpty {
-            coverSearchCandidates.append(numericISBN)
-        }
-        coverSearchCandidates.append(contentsOf: isbnCandidates)
-
-        for candidate in coverSearchCandidates where !candidate.isEmpty {
-            let normalized = candidate.filter { $0.isNumber || $0 == "X" || $0 == "x" }
-            guard normalized.count == 10 || normalized.count == 13 else { continue }
-            let normalizedUpper = normalized.uppercased()
-            let url = "https://covers.openlibrary.org/b/isbn/\(normalizedUpper)-L.jpg?default=false"
-            return resultWithCover(result, coverURL: url)
-        }
-
+        // Open Library metadata cover search
         if let metadataCover = await bestEffort({ try await queryOpenLibraryCoverByMetadata(title: result.title, author: result.author) }) {
-            return resultWithCover(result, coverURL: metadataCover)
+            appendUnique(metadataCover)
         }
 
-        return result
+        // Validate all non-Google candidates — return first that actually serves an image
+        if let validated = await bestEffort({ try await firstReachableCoverURL(from: candidates) }) {
+            return resultWithCover(result, coverURL: validated)
+        }
+
+        return resultWithCover(result, coverURL: "")
     }
 
     private func resultWithCover(_ result: BookLookupResult, coverURL: String) -> BookLookupResult {
@@ -484,7 +527,8 @@ struct BookLookupService {
         for candidate in candidates {
             guard let url = URL(string: candidate) else { continue }
             var request = URLRequest(url: url)
-            request.timeoutInterval = 8
+            request.httpMethod = "HEAD"
+            request.timeoutInterval = 6
             request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
 
             do {
@@ -497,6 +541,7 @@ struct BookLookupService {
                     return candidate
                 }
 
+                // Some servers don't return Content-Type on HEAD — accept if path looks like an image
                 let path = url.path.lowercased()
                 if path.hasSuffix(".jpg") || path.hasSuffix(".jpeg") || path.hasSuffix(".png") || path.hasSuffix(".webp") {
                     return candidate
@@ -517,13 +562,13 @@ struct BookLookupService {
         }
     }
 
-    private func fetchData(from url: URL, retries: Int = 1) async throws -> Data {
+    private func fetchData(from url: URL, retries: Int = 2) async throws -> Data {
         var lastError: Error?
 
         for attempt in 0...retries {
             do {
                 var request = URLRequest(url: url)
-                request.timeoutInterval = 8
+                request.timeoutInterval = 10
                 let (data, response) = try await URLSession.shared.data(for: request)
                 guard let http = response as? HTTPURLResponse else {
                     return data
@@ -535,14 +580,14 @@ struct BookLookupService {
 
                 let error = BookLookupNetworkError.httpStatus(http.statusCode)
                 if shouldRetry(error: error), attempt < retries {
-                    try await Task.sleep(nanoseconds: UInt64((attempt + 1) * 150_000_000))
+                    try await Task.sleep(nanoseconds: UInt64((attempt + 1) * 500_000_000))
                     continue
                 }
                 throw error
             } catch {
                 lastError = error
                 if shouldRetry(error: error), attempt < retries {
-                    try await Task.sleep(nanoseconds: UInt64((attempt + 1) * 150_000_000))
+                    try await Task.sleep(nanoseconds: UInt64((attempt + 1) * 500_000_000))
                     continue
                 }
                 throw error
