@@ -61,6 +61,26 @@ struct BookLookupService {
         return nil
     }
 
+    func lookupByTitle(query: String) async throws -> BookLookupResult? {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+
+        async let googleResult = bestEffort({ try await self.queryGoogleBooks(query: "intitle:\(trimmed)") })
+        async let openLibResult = bestEffort({ try await self.queryOpenLibrarySearch(query: trimmed) })
+
+        let google = await googleResult
+        let openLib = await openLibResult
+
+        if let result = google {
+            return await enrichAndValidateCover(result, isbnCandidates: [])
+        }
+        if let result = openLib {
+            return await enrichAndValidateCover(result, isbnCandidates: [])
+        }
+
+        return nil
+    }
+
     func lookupCover(title: String, author: String, isbn: String) async throws -> String? {
         var candidates: [String] = []
 
