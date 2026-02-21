@@ -24,6 +24,7 @@
 		EE340E70CF2884FD05548627 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = CF0147EBB02B03F9D6F2745A /* Assets.xcassets */; };
 		EFD002EA5C55D3C5DB6EE818 /* BarcodeScannerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DC21C482FBBB628449794372 /* BarcodeScannerView.swift */; };
 		FAA13348EE5C4D4B947B7D28 /* LibraryBackupDocument.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5D9457EDF6A9EB19D6E2BFE3 /* LibraryBackupDocument.swift */; };
+		7A8B9C0D1E2F3A4B5C6D7E8F /* TextScannerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3D7E8F2A1B4C5D6E7F8A9B0C /* TextScannerView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -45,6 +46,7 @@
 		CF0147EBB02B03F9D6F2745A /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		DC21C482FBBB628449794372 /* BarcodeScannerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BarcodeScannerView.swift; sourceTree = "<group>"; };
 		E759D1E4BDC9E224AFC732FB /* LentBooksView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LentBooksView.swift; sourceTree = "<group>"; };
+		3D7E8F2A1B4C5D6E7F8A9B0C /* TextScannerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TextScannerView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -101,6 +103,7 @@
 				E759D1E4BDC9E224AFC732FB /* LentBooksView.swift */,
 				BFF7E22347E92A9415246146 /* LibraryView.swift */,
 				CCD1E3BDA6DDDF8A667619E9 /* SettingsView.swift */,
+				3D7E8F2A1B4C5D6E7F8A9B0C /* TextScannerView.swift */,
 			);
 			path = Views;
 			sourceTree = "<group>";
@@ -208,6 +211,7 @@
 				A4BCC66A9B761344B78FE098 /* LibraryView.swift in Sources */,
 				050B506E2A946FE7483EA826 /* MyLibraryApp.swift in Sources */,
 				AA0C2C5F2B57E529ADA6BD7F /* SettingsView.swift in Sources */,
+				7A8B9C0D1E2F3A4B5C6D7E8F /* TextScannerView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
