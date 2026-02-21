@@ -1,5 +1,6 @@
 import SwiftUI
 import AVFoundation
+import VisionKit
 
 struct AddBookView: View {
     @Environment(\.dismiss) private var dismiss
@@ -18,6 +19,7 @@ struct AddBookView: View {
     @State private var notes = ""
 
     @State private var showingScanner = false
+    @State private var showingTextScanner = false
     @State private var lookupInProgress = false
     @State private var lookupErrorMessage: String?
     @State private var showingCameraDeniedAlert = false
@@ -27,6 +29,9 @@ struct AddBookView: View {
     @State private var duplicateMessage = ""
     @State private var coverLookupInProgress = false
     @State private var coverLookupMessage: String?
+    @State private var titleSearchQuery = ""
+    @State private var titleSearchInProgress = false
+    @State private var showTitleSearch = false
 
     private let lookupService = BookLookupService()
 
@@ -57,6 +62,9 @@ struct AddBookView: View {
             }
             .sheet(isPresented: $showingScanner) {
                 scannerOverlay
+            }
+            .sheet(isPresented: $showingTextScanner) {
+                textScannerOverlay
             }
             .alert("Camera Access Required", isPresented: $showingCameraDeniedAlert) {
                 Button("OK", role: .cancel) {}
@@ -103,6 +111,22 @@ struct AddBookView: View {
                     .background(.black.opacity(0.55), in: Capsule())
                     .foregroundStyle(.white)
 
+                if #available(iOS 16.0, *), TextScannerView.isSupported {
+                    Button {
+                        showingScanner = false
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                            showingTextScanner = true
+                        }
+                    } label: {
+                        Label("Scan Title Text Instead", systemImage: "text.viewfinder")
+                            .font(.headline)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 14)
+                            .background(.white.opacity(0.95), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                            .foregroundStyle(LibraryTheme.accent)
+                    }
+                }
+
                 Button("Enter Book Manually") {
                     showingScanner = false
                 }
@@ -138,7 +162,15 @@ struct AddBookView: View {
                 Button {
                     handleScanTapped()
                 } label: {
-                    Label("Scan with Camera", systemImage: "barcode.viewfinder")
+                    Label("Scan Barcode", systemImage: "barcode.viewfinder")
+                }
+
+                if #available(iOS 16.0, *), TextScannerView.isSupported {
+                    Button {
+                        handleTextScanTapped()
+                    } label: {
+                        Label("Scan Text", systemImage: "text.viewfinder")
+                    }
                 }
 
                 Spacer()
@@ -161,6 +193,86 @@ struct AddBookView: View {
                 Text(lookupErrorMessage)
                     .font(.footnote)
                     .foregroundStyle(.red)
+            }
+
+            if showTitleSearch {
+                titleSearchSection
+            }
+        }
+    }
+
+    private var titleSearchSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Divider()
+
+            Text("Search by title instead:")
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(LibraryTheme.textSecondary)
+
+            HStack {
+                TextField("Book title", text: $titleSearchQuery)
+                    .textInputAutocapitalization(.words)
+                    .onSubmit {
+                        Task { await searchByTitle() }
+                    }
+
+                Button {
+                    Task { await searchByTitle() }
+                } label: {
+                    if titleSearchInProgress {
+                        ProgressView()
+                    } else {
+                        Text("Search")
+                    }
+                }
+                .disabled(titleSearchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || titleSearchInProgress)
+            }
+        }
+    }
+
+    private var textScannerOverlay: some View {
+        ZStack(alignment: .bottom) {
+            if #available(iOS 16.0, *) {
+                TextScannerView { text in
+                    showingTextScanner = false
+                    titleSearchQuery = text
+                    showTitleSearch = true
+                    Task {
+                        await searchByTitle()
+                    }
+                }
+                .ignoresSafeArea()
+            }
+
+            VStack(spacing: 12) {
+                Text("Tap on the book title to scan it")
+                    .font(.headline)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 8)
+                    .background(.black.opacity(0.55), in: Capsule())
+                    .foregroundStyle(.white)
+
+                Button("Cancel") {
+                    showingTextScanner = false
+                }
+                .font(.headline)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 14)
+                .background(.white.opacity(0.95), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .foregroundStyle(.black)
+            }
+            .padding()
+        }
+        .overlay(alignment: .topTrailing) {
+            Button {
+                showingTextScanner = false
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.system(size: 28))
+                    .foregroundStyle(.white.opacity(0.92))
+                    .shadow(radius: 5)
+                    .padding(.top, 10)
+                    .padding(.trailing, 10)
             }
         }
     }
@@ -264,6 +376,22 @@ struct AddBookView: View {
         }
     }
 
+    private func handleTextScanTapped() {
+        switch AVCaptureDevice.authorizationStatus(for: .video) {
+        case .authorized:
+            showingTextScanner = true
+        case .notDetermined:
+            AVCaptureDevice.requestAccess(for: .video) { granted in
+                DispatchQueue.main.async {
+                    showingTextScanner = granted
+                    showingCameraDeniedAlert = !granted
+                }
+            }
+        default:
+            showingCameraDeniedAlert = true
+        }
+    }
+
     private func lookupBook(for rawCode: String, autoSaveAndDismissOnSuccess: Bool) async {
         let code = rawCode.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !code.isEmpty else { return }
@@ -273,7 +401,8 @@ struct AddBookView: View {
 
         do {
             guard let result = try await lookupService.lookup(barcode: code) else {
-                lookupErrorMessage = "No book found for that barcode. You can still enter details manually."
+                lookupErrorMessage = "No book found for that barcode."
+                showTitleSearch = true
                 lookupInProgress = false
                 return
             }
@@ -289,8 +418,37 @@ struct AddBookView: View {
                 saveBook()
             }
         } catch {
-            lookupErrorMessage = "Lookup failed. You can continue with manual entry."
+            lookupErrorMessage = "Lookup failed."
+            showTitleSearch = true
             lookupInProgress = false
+        }
+    }
+
+    private func searchByTitle() async {
+        let query = titleSearchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return }
+
+        titleSearchInProgress = true
+        lookupErrorMessage = nil
+
+        do {
+            guard let result = try await lookupService.lookupByTitle(query: query) else {
+                lookupErrorMessage = "No book found for \"\(query)\". Try a different title or enter details manually."
+                titleSearchInProgress = false
+                return
+            }
+
+            if title.isEmpty { title = result.title }
+            if author.isEmpty { author = result.author }
+            if isbn.isEmpty { isbn = result.isbn }
+            if coverURL.isEmpty { coverURL = result.coverURL }
+            genre = result.genre
+            showTitleSearch = false
+            lookupErrorMessage = nil
+            titleSearchInProgress = false
+        } catch {
+            lookupErrorMessage = "Title search failed. You can enter details manually."
+            titleSearchInProgress = false
         }
     }
 
